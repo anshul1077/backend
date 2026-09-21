@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Firebase Phone Auth Token Generator</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 400px; margin: 50px auto; padding: 20px; border: 1px solid #ccc; border-radius: 8px; }
+    input, button { width: 100%; padding: 10px; margin: 10px 0; box-sizing: border-box; }
+    button { background-color: #4F46E5; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    button:hover { background-color: #4338CA; }
+    textarea { width: 100%; height: 120px; font-family: monospace; font-size: 11px; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+
+  <h2>Firebase Phone Auth Tester</h2>
+  
+  <!-- Step 1: Phone & reCAPTCHA -->
+  <div id="step-phone">
+    <label>Phone Number (with Country Code):</label>
+    <input type="text" id="phoneNumber" placeholder="+917814583490" value="+91">
+    
+    <!-- Firebase requires a container for reCAPTCHA -->
+    <div id="recaptcha-container"></div>
+    
+    <button id="send-otp-btn" onclick="sendOTP()">Send OTP</button>
+  </div>
+
+  <!-- Step 2: Enter OTP Code -->
+  <div id="step-otp" class="hidden">
+    <label>Enter 6-digit OTP Code:</label>
+    <input type="text" id="otpCode" placeholder="123456">
+    <button onclick="verifyOTP()">Verify OTP & Get Token</button>
+  </div>
+
+  <!-- Step 3: Output Token -->
+  <div id="step-result" class="hidden">
+    <h3>Success! Your Firebase ID Token:</h3>
+    <p style="font-size: 12px; color: green;">Copy this long JWT string into Postman's <code>idToken</code> field:</p>
+    <textarea id="tokenOutput" readonly></textarea>
+    <button onclick="navigator.clipboard.writeText(document.getElementById('tokenOutput').value); alert('Token copied!');">Copy Token to Clipboard</button>
+  </div>
+
+  <!-- Firebase SDKs (v10 Modular via CDN) -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+    import { getAuth, RecaptchaVerifier, signInWithPhoneNumber } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+
+    // ⚠️ REPLACE THESE VALUES WITH YOUR ACTUAL FIREBASE PROJECT CONFIG
+    const firebaseConfig = {
+  apiKey: "AIzaSyBhWHbQ-a7WsVO1tyBkshJhAZGGlNOi0hY",
+  authDomain: "zump-327d4.firebaseapp.com",
+  projectId: "zump-327d4",
+  storageBucket: "zump-327d4.firebasestorage.app",
+  messagingSenderId: "612575878493",
+  appId: "1:612575878493:web:bd5368b7d209fa47241cb4",
+  measurementId: "G-V8WCQLD6HJ"
+};
+    // Initialize Firebase
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+
+    // Setup Invisible/Visible reCAPTCHA globally
+    window.setupRecaptcha = function() {
+      if (!window.recaptchaVerifier) {
+        window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
+          'size': 'normal', // Can be 'invisible' if preferred
+          'callback': (response) => {
+            // reCAPTCHA solved, allow signInWithPhoneNumber
+          }
+        });
+        window.recaptchaVerifier.render();
+      }
+    }
+
+    // Call setup on load
+    window.onload = function() {
+      window.setupRecaptcha();
+    };
+
+    window.sendOTP = async function() {
+      const phoneNumber = document.getElementById('phoneNumber').value;
+      const appVerifier = window.recaptchaVerifier;
+
+      try {
+        document.getElementById('send-otp-btn').innerText = "Sending...";
+        const confirmationResult = await signInWithPhoneNumber(auth, phoneNumber, appVerifier);
+        window.confirmationResult = confirmationResult;
+        
+        alert("SMS OTP sent successfully!");
+        document.getElementById('step-phone').classList.add('hidden');
+        document.getElementById('step-otp').classList.remove('hidden');
+      } catch (error) {
+        console.error("Error during sendOTP:", error);
+        alert("Failed to send SMS: " + error.message);
+        document.getElementById('send-otp-btn').innerText = "Send OTP";
+      }
+    }
+
+    window.verifyOTP = async function() {
+      const code = document.getElementById('otpCode').value;
+      try {
+        const result = await window.confirmationResult.confirm(code);
+        const user = result.user;
+        
+        // Retrieve the exact Firebase ID Token (JWT)
+        const idToken = await user.getIdToken();
+
+        document.getElementById('step-otp').classList.add('hidden');
+        document.getElementById('step-result').classList.remove('hidden');
+        document.getElementById('tokenOutput').value = idToken;
+      } catch (error) {
+        console.error("Error verifying OTP:", error);
+        alert("Invalid OTP code: " + error.message);
+      }
+    }
+  </script>
+</body>
+</html>

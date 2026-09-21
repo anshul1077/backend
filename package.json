@@ -17,9 +17,13 @@
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
     "express-session": "^1.19.0",
+    "firebase": "^12.19.0",
+    "firebase-admin": "^14.4.0",
+    "joi": "^18.2.9",
     "jsonwebtoken": "^9.0.3",
     "mongodb": "^7.6.0",
     "mongoose": "^9.10.1",
-    "multer": "^2.4.0"
+    "multer": "^2.4.0",
+    "redis": "^6.2.1"
   }
 }
