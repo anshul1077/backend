@@ -1,4 +1,5 @@
 import mongoose from "mongoose"
+import { type } from "os";
 
 const userSchema = new mongoose.Schema({
     name: {
@@ -28,13 +29,17 @@ const userSchema = new mongoose.Schema({
     countryCode: {
         type: String,
     },
-    dateofBirth: {
+    dateOfBirth: {
         type: Date,
     },
     status: {
         type: String,
         default: "active",
     },
+    isVerified: {
+        type: Boolean,
+        default: false
+    }
 
 },
 {
