@@ -7,6 +7,7 @@ import multer from "multer";
 import bcrypt from "bcrypt";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
+import { v2 as cloudinary } from "cloudinary"
 import redisClient from "../config/redis.js";
 // import admin from "../config/firebase.js";
 import { auth } from "../config/firebase.js"
@@ -16,7 +17,19 @@ import Session from "../models/session.js";
 // import twilio from "twilio";
 
 const router = express.Router();
-const upload = multer({ dest: "uploads/" });
+// const upload = multer({ dest: "uploads/" });
+
+console.log("Cloudinary environment check:", {
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY ? "LOADED" : "MISSING",
+  api_secret: process.env.CLOUDINARY_API_SECRET ? "LOADED" : "MISSING",
+});
+
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 // const twilioClient = twilio(
 //   process.env.TWILIO_ACCOUNT_SID, 
@@ -32,6 +45,7 @@ const signupSchema = Joi.object({
   countryCode: Joi.string().trim().pattern(/^\+[0-9]+$/).min(2).max(5).required(),
   address: Joi.string().trim().required(),
   dateOfBirth: Joi.date().iso().max("now").required(),
+  image: Joi.string().optional()
 });
 
 const loginSchema = Joi.object({
@@ -75,9 +89,12 @@ const otpVerifySchema = Joi.object({
 });
 
 
-router.post("/users", upload.single("image"), async (req, res) => {
+router.post("/users", async (req, res) => {
   try {
-    const { error, value } = signupSchema.validate(req.body, { abortEarly: false });
+    const { error, value } = signupSchema.validate(req.body, {
+      abortEarly: false,
+    });
+
     if (error) {
       return res.status(400).json({
         message: "Validation error",
@@ -85,27 +102,77 @@ router.post("/users", upload.single("image"), async (req, res) => {
       });
     }
 
-    const { name, email, password, address, countryCode, phone, dateOfBirth } = value;
+    const {
+      name,
+      email,
+      password,
+      address,
+      countryCode,
+      phone,
+      dateOfBirth,
+      image,
+    } = value;
 
-    const userExists = await User.findOne({ email });
+    // Check existing user
+    const userExists = await User.findOne({
+      email: email.toLowerCase(),
+    });
+
     if (userExists) {
-      return res.status(400).json({ message: "User already exists" });
+      return res.status(400).json({
+        message: "User already exists",
+      });
     }
 
-    const imagePath = req.file ? req.file.path : null;
-    const salt = await bcrypt.genSalt(10)
-    const hashedPassword = await bcrypt.hash(password, salt);
+    // =========================
+    // CLOUDINARY IMAGE UPLOAD
+    // =========================
+
+    let cloudinaryImageUrl = null;
+
+    if (image && image.trim() !== "") {
+      try {
+        const result = await cloudinary.uploader.upload(image, {
+          folder: "user_avatars",
+          resource_type: "image",
+        });
+
+        cloudinaryImageUrl = result.secure_url;
+
+        console.log("Cloudinary image URL:", cloudinaryImageUrl);
+
+      } catch (cloudinaryError) {
+        console.error("========== CLOUDINARY ERROR ==========");
+        console.error(cloudinaryError);
+        console.error("======================================");
+
+        return res.status(500).json({
+          message: "Failed to upload image",
+          error: cloudinaryError?.message || "Cloudinary upload failed",
+        });
+      }
+    }
+
+    // =========================
+    // PASSWORD HASH
+    // =========================
+
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // =========================
+    // CREATE USER
+    // =========================
 
     const user = await User.create({
       name,
-      email,
+      email: email.toLowerCase(),
       password: hashedPassword,
       address,
       countryCode,
       phone,
       dateOfBirth,
-      avtarKey: imagePath, 
-      isVerified: false,  
+      avtarKey: cloudinaryImageUrl,
+      isVerified: false,
     });
 
     return res.status(201).json({
@@ -119,182 +186,19 @@ router.post("/users", upload.single("image"), async (req, res) => {
         phone: user.phone,
         dateOfBirth: user.dateOfBirth,
         avtarKey: user.avtarKey,
-        isVerified: user.isVerified
+        isVerified: user.isVerified,
       },
     });
+
   } catch (error) {
     console.error("Signup Error:", error);
-    return res.status(500).json({ message: "Server error" });
+
+    return res.status(500).json({
+      message: "Server error",
+      error: error.message,
+    });
   }
 });
-
-// 2. LOGIN ROUTE
-// router.post("/auth/login", async (req, res) => {
-//   try {
-//     const { error, value } = loginSchema.validate(req.body, { abortEarly: false });
-//     if (error) {
-//       return res.status(400).json({
-//         message: "Validation error",
-//         errors: error.details.map((detail) => detail.message),
-//       });
-//     }
-
-//     const { email, password } = value;
-
-//     const user = await User.findOne({ email });
-//     if (!user) {
-//       return res.status(401).json({ message: "Invalid email or password" });
-//     }
-
-//     const isPasswordValid = await bcrypt.compare(password, user.password);
-//     if (!isPasswordValid) {
-//       return res.status(401).json({ message: "Invalid email or password" });
-//     }
-
-//     const accessToken = jwt.sign(
-//       { userId: user._id, email: user.email },
-//       process.env.ACCESS_TOKEN_SECRET,
-//       { expiresIn: process.env.ACCESS_TOKEN_EXPIRY || "15m" }
-//     );
-
-//     const refreshToken = jwt.sign(
-//       { userId: user._id },
-//       process.env.REFRESH_TOKEN_SECRET,
-//       { expiresIn: process.env.REFRESH_TOKEN_EXPIRY || "7d" }
-//     );
-
-//     res.cookie("refreshToken", refreshToken, {
-//       httpOnly: true,
-//       secure: process.env.NODE_ENV === "production",
-//       sameSite: "strict",
-//       maxAge: 7 * 24 * 60 * 60 * 1000,
-//     });
-
-//     if (req.session) {
-//       req.session.userId = user._id;
-//       req.session.email = user.email;
-//     }
-
-//     // Create session document in MongoDB
-//     const familyId = crypto.randomUUID();
-//     const tokenId = crypto.randomUUID();
-//     const issuedAt = new Date();
-//     const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
-
-
-//     const sessionDoc = await Session.create({
-//     userId: user._id,
-//     tokenId,
-//     familyId,
-//     issuedAt,
-//     expiresAt,
-//     userAgent: req.headers["user-agent"],
-//   });
-
-//     // await Session.create({
-//     //   userId: user._id,
-//     //   tokenId,
-//     //   familyId,
-//     //   expiresAt,
-//     //   userAgent: req.headers["user-agent"],
-//     // });
-
-//     await Auth.create({
-//       userId: user._id,
-//       event: "login",
-//       success: true,
-//       ipAddress: req.ip,
-//       userAgent: req.headers["user-agent"],
-//     });
-
-//     return res.status(200).json({
-//       message: "Login successful",
-//       accessToken,
-//       sessionId: sessionDoc._id, // Option to send back session identifiers if needed
-//       userId: user._id,
-//       email: user.email,
-//     });
-//   } catch (error) {
-//     console.error("Login Error:", error);
-//     return res.status(500).json({ message: "Server error" });
-//   }
-// });
-
-// // 3. FIREBASE AUTHENTICATION VERIFICATION ROUTE
-// router.post("/auth/firebase/verify", async (req, res) => {
-//   try {
-//     console.log("Incoming request body:", req.body); // 👀
-//     const { error, value } = firebaseVerifySchema.validate(req.body, { abortEarly: false });
-//     if (error) {
-//       return res.status(400).json({
-//         message: "Validation error",
-//         errors: error.details.map((detail) => detail.message),
-//       });
-//     }
-
-//     const { idToken, phone} = value;
-
-//     // Verify Firebase ID Token
-//     const decodedToken = await auth.verifyIdToken(idToken);
-    
-//     // Check if phone number matches Firebase record (or optional fallback check)
-//     if (decodedToken.phone_number && !decodedToken.phone_number.includes(phone)) {
-//       return res.status(400).json({ message: "Phone number mismatch with Firebase token" });
-//     }
-
-//     const user = await User.findOneAndUpdate(
-//       { phone },
-//       {isVerified: true},
-//       {new: true}
-//   );
-//     if (!user) {
-//       return res.status(404).json({ message: "User not found with provided phone number" });
-//     }
-
-//     const accessToken = jwt.sign(
-//       { userId: user._id, email: user.email },
-//       process.env.ACCESS_TOKEN_SECRET,
-//       { expiresIn: process.env.ACCESS_TOKEN_EXPIRY || "15m" }
-//     );
-
-//     const refreshToken = jwt.sign(
-//       { userId: user._id },
-//       process.env.REFRESH_TOKEN_SECRET,
-//       { expiresIn: process.env.REFRESH_TOKEN_EXPIRY || "7d" }
-//     );
-
-//     res.cookie("refreshToken", refreshToken, {
-//       httpOnly: true,
-//       secure: process.env.NODE_ENV === "production",
-//       sameSite: "strict",
-//       maxAge: 7 * 24 * 60 * 60 * 1000,
-//     });
-
-//     if (req.session) {
-//       req.session.userId = user._id;
-//       req.session.email = user.email;
-//     }
-
-//     await Auth.create({
-//       userId: user._id,
-//       event: "firebase_login",
-//       success: true,
-//       ipAddress: req.ip,
-//       userAgent: req.headers["user-agent"],
-//     });
-
-//     return res.status(200).json({
-//       message: "Firebase verification successful",
-//       accessToken,
-//       userId: user._id,
-//       email: user.email,
-//       isVerified: user.isVerified
-//     });
-//   } catch (error) {
-//     console.error("Firebase Verification Error:", error);
-//     return res.status(401).json({ message: "Invalid or expired Firebase token" });
-//   }
-// });
 
 router.post("/auth/otp/request", async (req, res) => {
   try {
@@ -740,53 +644,85 @@ router.get("/users/:id", async (req, res) => {
 
 router.post("/auth/logout", async (req, res) => {
   try {
-    const refreshToken = req.cookies.refreshToken;
+    let userId = null;
+
+    // 1. First try refresh token
+    const refreshToken = req.cookies?.refreshToken;
 
     if (refreshToken) {
       try {
-        const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-        // Clean up session records linked to this user from MongoDB
-        await Session.deleteMany({ userId: decoded.userId });
+        const decoded = jwt.verify(
+          refreshToken,
+          process.env.REFRESH_TOKEN_SECRET
+        );
 
-        // Record logout audit activity
-        await Auth.create({
+        userId = decoded.userId;
+
+        // Delete user's sessions
+        await Session.deleteMany({
           userId: decoded.userId,
-          event: "logout",
-          success: true,
-          ipAddress: req.ip,
-          userAgent: req.headers["user-agent"],
         });
+
       } catch (err) {
-        // Token might be expired/invalid already, but we still proceed to clear local session state
+        console.log("Refresh token invalid/expired during logout");
       }
     }
 
-    // Clear the HTTP-only refresh token cookie
+    // 2. If refresh token is not available,
+    // use express session userId
+    if (!userId && req.session?.userId) {
+      userId = req.session.userId;
+    }
+
+    // 3. Save logout activity in MongoDB
+    if (userId) {
+      await Auth.create({
+        userId: userId,
+        event: "logout",
+        success: true,
+        ipAddress: req.ip,
+        userAgent: req.headers["user-agent"],
+      });
+
+      console.log("Logout activity saved for user:", userId);
+    } else {
+      console.log("Logout activity NOT saved: userId not found");
+    }
+
+    // 4. Clear refresh token
     res.clearCookie("refreshToken", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "strict",
     });
 
-    // Destroy express-session if active
+    // 5. Destroy express session
     if (req.session) {
       req.session.destroy((err) => {
         if (err) {
-          console.error("Session destruction error during logout:", err);
+          console.error("Session destruction error:", err);
         }
+
         res.clearCookie("connect.sid");
+
+        return res.status(200).json({
+          message: "Logged out successfully",
+        });
+      });
+    } else {
+      return res.status(200).json({
+        message: "Logged out successfully",
       });
     }
 
-    return res.status(200).json({ 
-      message: "Logged out successfully. All sessions revoked." 
-    });
   } catch (error) {
     console.error("Logout Error:", error);
-    return res.status(500).json({ message: "Server error during logout" });
+
+    return res.status(500).json({
+      message: "Server error during logout",
+    });
   }
 });
-
 
 
 
@@ -797,51 +733,51 @@ router.get("/users/:id/auth-activity", async (req, res) => {
     const { id } = req.params;
     const { event, startDate, endDate, success } = req.query;
 
-    const matchCriteria = { userId: new mongoose.Types.ObjectId(id) };
-    
-    matchCriteria.success = success !== undefined ? success === "true" : true;
+    const matchCriteria = {
+      userId: new mongoose.Types.ObjectId(id),
+    };
 
+    // Optional success filter
+    if (success !== undefined) {
+      matchCriteria.success = success === "true";
+    }
+
+    // Optional event filter
+    // ?event=login
+    // ?event=logout
     if (event) {
       matchCriteria.event = event;
     }
 
+    // Optional date filter
     if (startDate || endDate) {
       matchCriteria.createdAt = {};
-      if (startDate) matchCriteria.createdAt.$gte = new Date(startDate);
-      if (endDate) matchCriteria.createdAt.$lte = new Date(endDate);
+
+      if (startDate) {
+        matchCriteria.createdAt.$gte = new Date(startDate);
+      }
+
+      if (endDate) {
+        matchCriteria.createdAt.$lte = new Date(endDate);
+      }
     }
 
-    const aggregationPipeline = [
-      { $match: matchCriteria },
-      { 
-        $group: {
-          _id: null,
-          totalSuccessfulLogins: { $sum: 1 },
-          timestamps: { $push: "$createdAt" }
-        }
-      },
-      {
-        $project: {
-          _id: 0,
-          totalSuccessfulLogins: 1,
-          timestamps: 1
-        }
-      }
-    ];
-
-    const result = await Auth.aggregate(aggregationPipeline);
-
-    const activityData = result.length > 0 
-      ? result[0] 
-      : { totalSuccessfulLogins: 0, timestamps: [] };
+    const activities = await Auth.find(matchCriteria)
+      .sort({ createdAt: -1 })
+      .select("-__v");
 
     return res.status(200).json({
-      message: "Auth activity fetched successfully via database aggregation",
-      data: activityData
+      message: "Auth activity fetched successfully",
+      totalActivities: activities.length,
+      data: activities,
     });
+
   } catch (error) {
-    console.error("Auth Activity Aggregation Error:", error);
-    return res.status(500).json({ message: "Server error" });
+    console.error("Auth Activity Error:", error);
+
+    return res.status(500).json({
+      message: "Server error",
+    });
   }
 });
 
