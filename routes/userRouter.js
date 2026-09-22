@@ -88,6 +88,89 @@ const otpVerifySchema = Joi.object({
   isVerified: Joi.boolean(),
 });
 
+// 0. HEALTH CHECK / LIVENESS ROUTE
+router.get("/healthz", async (req, res) => {
+  try {
+    // Check MongoDB connection state (1 = connected)
+    const dbState = mongoose.connection.readyState;
+    const isDbConnected = dbState === 1;
+
+    // Check Redis connection status
+    let isRedisConnected = false;
+    try {
+      const pong = await redisClient.ping();
+      isRedisConnected = pong === "PONG" || pong === true;
+    } catch (redisErr) {
+      isRedisConnected = false;
+    }
+
+    const healthStatus = {
+      status: "OK",
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      services: {
+        server: "up",
+        database: isDbConnected ? "connected" : "disconnected",
+        redis: isRedisConnected ? "connected" : "disconnected",
+      },
+    };
+
+    // Return 200 OK for liveness
+    return res.status(200).json(healthStatus);
+  } catch (error) {
+    console.error("Health Check Error:", error);
+    return res.status(500).json({
+      status: "ERROR",
+      message: error.message,
+    });
+  }
+});
+
+// 0. READINESS CHECK ROUTE
+router.get("/readiz", async (req, res) => {
+  try {
+    // 1. Check MongoDB connection state (1 = connected)
+    const dbState = mongoose.connection.readyState;
+    const isDbConnected = dbState === 1;
+
+    // 2. Check Redis connection status
+    let isRedisConnected = false;
+    try {
+      const pong = await redisClient.ping();
+      isRedisConnected = pong === "PONG" || pong === true;
+    } catch (redisErr) {
+      isRedisConnected = false;
+    }
+
+    // 3. Determine if app is ready for traffic
+    const isReady = isDbConnected && isRedisConnected;
+
+    const readinessStatus = {
+      status: isReady ? "READY" : "NOT_READY",
+      timestamp: new Date().toISOString(),
+      services: {
+        database: isDbConnected ? "connected" : "disconnected",
+        redis: isRedisConnected ? "connected" : "disconnected",
+      },
+    };
+
+    // Return 503 if critical dependencies are not ready
+    if (!isReady) {
+      return res.status(503).json(readinessStatus);
+    }
+
+    // Return 200 OK when fully ready
+    return res.status(200).json(readinessStatus);
+  } catch (error) {
+    console.error("Readiness Check Error:", error);
+    return res.status(503).json({
+      status: "NOT_READY",
+      message: error.message,
+    });
+  }
+});
+
+
 
 router.post("/users", async (req, res) => {
   try {
