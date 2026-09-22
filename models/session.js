@@ -8,6 +8,7 @@ const sessionSchema = new mongoose.Schema({
     },
     tokenId: {
         type: String,
+        unique: true,
         required: true
     },
     familyId: { 
@@ -16,7 +17,7 @@ const sessionSchema = new mongoose.Schema({
     },
     issuedAt: {
         type: Date,
-        default: Date.now // Automatically captures when the session was created
+        default: Date.now 
     },
     expiresAt: {
         type: Date,

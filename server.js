@@ -1,8 +1,8 @@
-dotenv.config();
+import "dotenv/config";
+
 
 import express from "express";
 import mongoose from "mongoose";
-import dotenv from "dotenv";
 import session from "express-session";
 import cookieParser from "cookie-parser";
 import redisClient from "./config/redis.js";
@@ -10,14 +10,16 @@ import userRouter from "./routes/userRouter.js";
 import MongoStore from "connect-mongo";
 
 
-
 const app = express();
 
-
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));
 app.use(cookieParser());
 
-app.use(express.urlencoded({ extended: true }));
+app.use(express.urlencoded({
+  extended: true,
+  limit: "10mb"
+}));
+
 
 // --- ADDED SESSION MIDDLEWARE HERE ---
 app.use(
