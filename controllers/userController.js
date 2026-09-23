@@ -1,4 +1,26 @@
+import jwt from "jsonwebtoken";
 import userService from "../services/userService.js";
+
+const resolveUserId = (req) => {
+  if (req.session && req.session.userId) {
+    return req.session.userId;
+  }
+
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith("Bearer ")) {
+    const token = authHeader.split(" ")[1];
+    try {
+      const decoded = jwt.verify(token, process.env.ACCESS_TOKEN_SECRET);
+      return decoded.userId;
+    } catch (error) {
+      const err = new Error("Invalid or expired token.");
+      err.status = 401;
+      throw err;
+    }
+  }
+
+  return null;
+};
 
 const userController = {
   async getHealthStatus(req, res) {
@@ -176,11 +198,12 @@ const userController = {
 
   async updateProfile(req, res, validatedData) {
     try {
-      if (!req.session || !req.session.userId) {
+      const userId = resolveUserId(req);
+      if (!userId) {
         return res.status(401).json({ message: "Unauthorized. Please log in first." });
       }
 
-      const result = await userService.updateUserProfile(req.session.userId, validatedData);
+      const result = await userService.updateUserProfile(userId, validatedData);
       return res.status(200).json(result);
     } catch (error) {
       console.error("PUT Profile Error:", error);
@@ -192,11 +215,12 @@ const userController = {
 
   async patchProfile(req, res, validatedData) {
     try {
-      if (!req.session || !req.session.userId) {
+      const userId = resolveUserId(req);
+      if (!userId) {
         return res.status(401).json({ message: "Unauthorized. Please log in first." });
       }
 
-      const result = await userService.patchUserProfile(req.session.userId, validatedData);
+      const result = await userService.patchUserProfile(userId, validatedData);
       return res.status(200).json(result);
     } catch (error) {
       console.error("PATCH Profile Error:", error);
@@ -208,21 +232,28 @@ const userController = {
 
   async deleteProfile(req, res) {
     try {
-      if (!req.session || !req.session.userId) {
+      const userId = resolveUserId(req);
+      if (!userId) {
         return res.status(401).json({ message: "Unauthorized. Please log in first." });
       }
 
-      await userService.deleteUserProfile(req.session.userId);
+      await userService.deleteUserProfile(userId);
 
-      req.session.destroy((err) => {
-        if (err) {
-          console.error("Session clean error upon user deletion:", err);
-          return res.status(500).json({ message: "Account removed, but session clear failed." });
-        }
-        res.clearCookie("connect.sid");
-        res.clearCookie("refreshToken");
-        return res.status(200).json({ message: "Your account profile has been completely deleted." });
-      });
+      if (req.session) {
+        req.session.destroy((err) => {
+          if (err) {
+            console.error("Session clean error upon user deletion:", err);
+            return res.status(500).json({ message: "Account removed, but session clear failed." });
+          }
+          res.clearCookie("connect.sid");
+          res.clearCookie("refreshToken");
+          return res.status(200).json({ message: "Your account profile has been completely deleted." });
+        });
+        return;
+      }
+
+      res.clearCookie("refreshToken");
+      return res.status(200).json({ message: "Your account profile has been completely deleted." });
     } catch (error) {
       console.error("DELETE Profile Error:", error);
       return res.status(error.status || 500).json({

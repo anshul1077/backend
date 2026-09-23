@@ -370,10 +370,40 @@ const userService = {
   },
 
   async updateUserProfile(userId, value) {
+    console.log("Updating user profile for userId:", userId, "with value:", value);
+
+    const updatePayload = { ...value };
+
+    if (Object.prototype.hasOwnProperty.call(updatePayload, "image")) {
+      if (typeof updatePayload.image === "string" && updatePayload.image.trim() !== "") {
+        try {
+          const result = await cloudinary.uploader.upload(updatePayload.image, {
+            folder: "user_avatars",
+            resource_type: "image",
+          });
+          updatePayload.avtarKey = result.secure_url;
+        } catch (cloudinaryError) {
+          console.error("========== CLOUDINARY ERROR ==========");
+          console.error(cloudinaryError);
+          console.error("======================================");
+
+          const error = new Error("Failed to upload image");
+          error.status = 500;
+          error.error = cloudinaryError?.message || "Cloudinary upload failed";
+          throw error;
+        }
+      }
+      delete updatePayload.image;
+    }
+
+    if (updatePayload.email) {
+      updatePayload.email = updatePayload.email.toLowerCase();
+    }
+
     const updatedUser = await User.findByIdAndUpdate(
       userId,
-      value,
-      { returnDocument: true, runValidators: true }
+      updatePayload,
+      { new: true, runValidators: true }
     ).select("-password");
 
     if (!updatedUser) {
@@ -389,9 +419,37 @@ const userService = {
   },
 
   async patchUserProfile(userId, value) {
+    const updatePayload = { ...value };
+
+    if (Object.prototype.hasOwnProperty.call(updatePayload, "image")) {
+      if (typeof updatePayload.image === "string" && updatePayload.image.trim() !== "") {
+        try {
+          const result = await cloudinary.uploader.upload(updatePayload.image, {
+            folder: "user_avatars",
+            resource_type: "image",
+          });
+          updatePayload.avtarKey = result.secure_url;
+        } catch (cloudinaryError) {
+          console.error("========== CLOUDINARY ERROR ==========");
+          console.error(cloudinaryError);
+          console.error("======================================");
+
+          const error = new Error("Failed to upload image");
+          error.status = 500;
+          error.error = cloudinaryError?.message || "Cloudinary upload failed";
+          throw error;
+        }
+      }
+      delete updatePayload.image;
+    }
+
+    if (updatePayload.email) {
+      updatePayload.email = updatePayload.email.toLowerCase();
+    }
+
     const updatedUser = await User.findByIdAndUpdate(
       userId,
-      { $set: value },
+      { $set: updatePayload },
       { new: true, runValidators: true }
     ).select("-password");
 

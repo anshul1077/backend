@@ -26,6 +26,9 @@ const fullUpdateSchema = Joi.object({
   email: Joi.string().trim().email().required(),
   phone: Joi.string().trim().pattern(/^[0-9]+$/).min(7).max(15).required(),
   address: Joi.string().trim().required(),
+  countryCode: Joi.string().trim().pattern(/^\+[0-9]+$/).min(2).max(5).optional(),
+  image: Joi.string().allow("").optional(),
+  dateOfBirth: Joi.date().iso().max("now").required(),
 });
 
 const partialUpdateSchema = Joi.object({
@@ -33,6 +36,8 @@ const partialUpdateSchema = Joi.object({
   email: Joi.string().trim().email().optional(),
   phone: Joi.string().trim().pattern(/^[0-9]+$/).min(7).max(15).optional(),
   address: Joi.string().trim().optional(),
+  countryCode: Joi.string().trim().pattern(/^\+[0-9]+$/).min(2).max(5).optional(),
+  image: Joi.string().allow("").optional(),
   dateOfBirth: Joi.date().iso().max("now").optional(),
   password: Joi.any().forbidden().messages({
     "any.unknown": "Password updates cannot be processed via this profile route.",
@@ -109,6 +114,7 @@ router.post("/auth/refresh", userController.refreshToken);
 router.get("/users/me", userController.getCurrentUser);
 
 router.put("/users/me", async (req, res) => {
+  console.log("Received request to update user profile with data:", req.body);
   const { error, value } = fullUpdateSchema.validate(req.body, { abortEarly: false });
 
   if (error) {
