@@ -240,7 +240,7 @@ const userController = {
       await userService.deleteUserProfile(userId);
 
       if (req.session) {
-        req.session.destroy((err) => {
+        req.session.destroy((err) => {//
           if (err) {
             console.error("Session clean error upon user deletion:", err);
             return res.status(500).json({ message: "Account removed, but session clear failed." });
