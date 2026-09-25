@@ -8,6 +8,215 @@ import User from "../models/user.js";
 import Auth from "../models/authActivities.js";
 import Session from "../models/session.js";
 
+const userCacheKey = (userId) => `user:${userId}`;
+const signupUserKey = (userId) => `signup:user:${userId}`;
+const signupPhoneKey = (phone) => `signup:phone:${phone}`;
+const otpRequestKey = (userId, requestId) => `otp:request:${userId}:${requestId}`;
+const otpLoginKey = (userId, loginId) => `otp:login:${userId}:${loginId}`;
+const avatarUploadKey = (uploadId) => `avatar-upload:${uploadId}`;
+const signupAvatarUploadKey = (uploadId) => `signup-avatar-upload:${uploadId}`;
+const avatarFolder = "user_avatars";
+const avatarMaxBytes = 5 * 1024 * 1024;
+const avatarFormats = new Set(["jpg", "jpeg", "png", "webp"]);
+const avatarUrlTtlSeconds = 5 * 60;
+
+const createAvatarUrl = (publicId) => {
+  if (!publicId) {
+    return null;
+  }
+
+  if (!process.env.CLOUDINARY_AUTH_TOKEN_KEY) {
+    throw new Error("CLOUDINARY_AUTH_TOKEN_KEY is required for avatar URLs");
+  }
+
+  return cloudinary.url(publicId, {
+    resource_type: "image",
+    type: "authenticated",
+    secure: true,
+    sign_url: true,
+    auth_token: {
+      key: process.env.CLOUDINARY_AUTH_TOKEN_KEY,
+      duration: avatarUrlTtlSeconds,
+    },
+  });
+};
+
+const toPublicUser = (user, includeAvatarId = false) => {
+  const publicUser = user.toObject ? user.toObject() : { ...user };
+  delete publicUser.password;
+  delete publicUser.__v;
+  delete publicUser.avtarKey;
+  if (!includeAvatarId) {
+    delete publicUser.avtarPublicId;
+  }
+  publicUser.avatarUrl = createAvatarUrl(publicUser.avtarPublicId);
+  return publicUser;
+};
+
+const cacheUser = async (user) => {
+  const publicUser = toPublicUser(user);
+  const cachedUser = toPublicUser(user, true);
+  const cacheTtl = Number.parseInt(process.env.USER_CACHE_TTL, 10);
+  const cacheKey = userCacheKey(publicUser._id.toString());
+
+  try {
+    if (!redisClient.isReady) {
+      throw new Error("Redis client is not ready");
+    }
+
+    const serializedUser = JSON.stringify(cachedUser);
+    if (Number.isInteger(cacheTtl) && cacheTtl > 0) {
+      await redisClient.set(cacheKey, serializedUser, { EX: cacheTtl });
+    } else {
+      await redisClient.set(cacheKey, serializedUser);
+    }
+
+    console.log(`User cached in Redis: ${cacheKey}`);
+  } catch (error) {
+    console.error("Failed to cache user:", error.message);
+  }
+
+  return publicUser;
+};
+
+const getCachedUser = async (userId) => {
+  try {
+    const cachedUser = await redisClient.get(userCacheKey(userId));
+    if (!cachedUser) {
+      return null;
+    }
+
+    const parsedUser = JSON.parse(cachedUser);
+    parsedUser.avatarUrl = createAvatarUrl(parsedUser.avtarPublicId);
+    delete parsedUser.avtarPublicId;
+    return parsedUser;
+  } catch (error) {
+    console.error("Failed to read user cache:", error.message);
+    return null;
+  }
+};
+
+const invalidateUserCache = async (userId) => {
+  if (!redisClient.isReady) {
+    throw new Error("Redis client is not ready; user cache was not invalidated");
+  }
+
+  await redisClient.del(userCacheKey(userId));
+  console.log(`User cache invalidated: ${userCacheKey(userId)}`);
+};
+
+const saveSignupRecord = async (userId, record, ttlSeconds = null) => {
+  if (!redisClient.isReady) {
+    throw new Error("Redis client is not ready; signup data was not stored");
+  }
+
+  const key = signupUserKey(userId);
+  const serializedRecord = JSON.stringify(record);
+  if (ttlSeconds) {
+    await redisClient.set(key, serializedRecord, { EX: ttlSeconds });
+  } else {
+    await redisClient.set(key, serializedRecord);
+  }
+  await redisClient.set(signupPhoneKey(record.phone), userId.toString());
+};
+
+const getSignupRecordByPhone = async (phone) => {
+  const userId = await redisClient.get(signupPhoneKey(phone));
+  if (!userId) {
+    return null;
+  }
+
+  const record = await redisClient.get(signupUserKey(userId));
+  return record ? { userId, record: JSON.parse(record) } : null;
+};
+
+const saveOtpHistory = async (key, record, ttlSeconds = 30 * 24 * 60 * 60) => {
+  if (!redisClient.isReady) {
+    throw new Error("Redis is not connected; OTP history was not stored");
+  }
+
+  await redisClient.set(key, JSON.stringify(record), { EX: ttlSeconds });
+};
+
+const deleteCloudinaryAvatar = async (publicId) => {
+  if (!publicId) {
+    return;
+  }
+
+  await cloudinary.uploader.destroy(publicId, {
+    resource_type: "image",
+    type: "authenticated",
+    invalidate: true,
+  });
+};
+
+const createDirectAvatarUpload = async (keyFactory, ownerId = null) => {
+  const uploadId = crypto.randomUUID();
+  const timestamp = Math.floor(Date.now() / 1000);
+  const publicId = `${ownerId ? `${ownerId}/` : "signup/"}${uploadId}`;
+  const uploadParams = {
+    folder: avatarFolder,
+    public_id: publicId,
+    type: "authenticated",
+    timestamp,
+  };
+  const signature = cloudinary.utils.api_sign_request(
+    uploadParams,
+    process.env.CLOUDINARY_API_SECRET
+  );
+
+  await redisClient.set(
+    keyFactory(uploadId),
+    JSON.stringify({ userId: ownerId?.toString() || null, publicId }),
+    { EX: 10 * 60 }
+  );
+
+  return {
+    uploadId,
+    uploadUrl: `https://api.cloudinary.com/v1_1/${process.env.CLOUDINARY_CLOUD_NAME}/image/upload`,
+    fields: {
+      api_key: process.env.CLOUDINARY_API_KEY,
+      folder: avatarFolder,
+      public_id: publicId,
+      type: "authenticated",
+      timestamp,
+      signature,
+    },
+    allowedContentTypes: ["image/jpeg", "image/png", "image/webp"],
+    maxBytes: avatarMaxBytes,
+    expiresInSeconds: 600,
+  };
+};
+
+const getVerifiedAvatarObject = async (publicId) => {
+  let uploadedObject;
+  try {
+    uploadedObject = await cloudinary.api.resource(publicId, {
+      resource_type: "image",
+      type: "authenticated",
+    });
+  } catch (cloudinaryError) {
+    const error = new Error("Uploaded avatar was not found");
+    error.status = 400;
+    throw error;
+  }
+
+  if (
+    uploadedObject.public_id !== publicId ||
+    uploadedObject.resource_type !== "image" ||
+    uploadedObject.type !== "authenticated" ||
+    !avatarFormats.has(uploadedObject.format?.toLowerCase()) ||
+    uploadedObject.bytes > avatarMaxBytes
+  ) {
+    await deleteCloudinaryAvatar(publicId);
+    const error = new Error("Avatar content type or size is not permitted");
+    error.status = 400;
+    throw error;
+  }
+
+  return uploadedObject;
+};
+
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
@@ -71,38 +280,26 @@ const userService = {
     countryCode,
     phone,
     dateOfBirth,
+    avatarUploadId,
     image,
   }) {
-    const userExists = await User.findOne({
-      email: email.toLowerCase(),
-    });
-
-    if (userExists) {
-      const error = new Error("User already exists");
-      error.status = 400;
-      throw error;
-    }
-
-    let cloudinaryImageUrl = null;
-
-    if (image && image.trim() !== "") {
-      try {
-        const result = await cloudinary.uploader.upload(image, {
-          folder: "user_avatars",
-          resource_type: "image",
-        });
-
-        cloudinaryImageUrl = result.secure_url;
-      } catch (cloudinaryError) {
-        console.error("========== CLOUDINARY ERROR ==========");
-        console.error(cloudinaryError);
-        console.error("======================================");
-
-        const error = new Error("Failed to upload image");
-        error.status = 500;
-        error.error = cloudinaryError?.message || "Cloudinary upload failed";
+    let avatarPublicId = null;
+    if (avatarUploadId) {
+      const pendingUploadJson = await redisClient.get(signupAvatarUploadKey(avatarUploadId));
+      if (!pendingUploadJson) {
+        const error = new Error("Avatar upload is missing or expired");
+        error.status = 400;
         throw error;
       }
+      const pendingUpload = JSON.parse(pendingUploadJson);
+      const uploadedObject = await getVerifiedAvatarObject(pendingUpload.publicId);
+      avatarPublicId = uploadedObject.public_id;
+    }
+
+    if (image) {
+      const error = new Error("Use avatarUploadId after direct Cloudinary upload; do not send base64 image data");
+      error.status = 400;
+      throw error;
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -115,83 +312,170 @@ const userService = {
       countryCode,
       phone,
       dateOfBirth,
-      avtarKey: cloudinaryImageUrl,
+      avtarKey: null,
+      avtarPublicId: avatarPublicId,
       isVerified: false,
     });
 
+    if (avatarUploadId) {
+      await redisClient.del(signupAvatarUploadKey(avatarUploadId));
+    }
+
+    await saveSignupRecord(user._id, {
+      userId: user._id.toString(),
+      phone: user.phone,
+      hasOtp: false,
+      hashOtp: null,
+      otpExpiresAt: null,
+      attempts: 0,
+      isVerified: false,
+    });
+
+    const publicUser = await cacheUser(user);
+
     return {
       message: "User sign-up successfully!",
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        address: user.address,
-        countryCode: user.countryCode,
-        phone: user.phone,
-        dateOfBirth: user.dateOfBirth,
-        avtarKey: user.avtarKey,
-        isVerified: user.isVerified,
+      user: toPublicUser(user),
+    };
+  },
+
+  async createAvatarUpload(userId) {
+    return createDirectAvatarUpload(avatarUploadKey, userId);
+  },
+
+  async createSignupAvatarUpload() {
+    return createDirectAvatarUpload(signupAvatarUploadKey);
+  },
+
+  async confirmAvatarUpload(userId, uploadId) {
+    const pendingUploadJson = await redisClient.get(avatarUploadKey(uploadId));
+    if (!pendingUploadJson) {
+      const error = new Error("Avatar upload is missing or expired");
+      error.status = 400;
+      throw error;
+    }
+
+    const pendingUpload = JSON.parse(pendingUploadJson);
+    if (pendingUpload.userId !== userId.toString()) {
+      const error = new Error("Avatar upload does not belong to this user");
+      error.status = 403;
+      throw error;
+    }
+
+    const uploadedObject = await getVerifiedAvatarObject(pendingUpload.publicId);
+
+    const user = await User.findById(userId).select("-password");
+    if (!user) {
+      const error = new Error("User profile not found");
+      error.status = 404;
+      throw error;
+    }
+
+    const previousPublicId = user.avtarPublicId;
+    if (previousPublicId && previousPublicId !== uploadedObject.public_id) {
+      await deleteCloudinaryAvatar(previousPublicId);
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      {
+        avtarPublicId: uploadedObject.public_id,
       },
+      { new: true, runValidators: true }
+    ).select("-password");
+
+    await redisClient.del(avatarUploadKey(uploadId));
+    await invalidateUserCache(userId);
+
+    return {
+      message: "Avatar uploaded and confirmed successfully",
+      user: toPublicUser(updatedUser),
     };
   },
 
   async requestOtp(phone) {
     const cooldownKey = `cooldown:${phone}`;
-    const otpKey = `otp:${phone}`;
+    if (!redisClient.isReady) {
+      const error = new Error("Redis is not connected");
+      error.status = 503;
+      throw error;
+    }
 
-    const existingCooldown = await redisClient.get(cooldownKey);
-    if (existingCooldown) {
+    if (await redisClient.get(cooldownKey)) {
       const error = new Error("Please wait before requesting another OTP.");
       error.status = 429;
       throw error;
     }
 
-    const otp = crypto.randomInt(100000, 1000000).toString();
-    const otpHashed = crypto.createHash("sha256").update(otp).digest("hex");
+    const signupData = await getSignupRecordByPhone(phone);
+    if (!signupData) {
+      const error = new Error("User signup record not found");
+      error.status = 404;
+      throw error;
+    }
 
-    await redisClient.hSet(otpKey, {
-      hash: otpHashed,
+    const otp = crypto.randomInt(100000, 1000000).toString();
+    const hashOtp = crypto.createHash("sha256").update(otp).digest("hex");
+    await saveSignupRecord(signupData.userId, {
+      ...signupData.record,
+      hasOtp: true,
+      hashOtp,
+      otpRequestId: crypto.randomUUID(),
+      otpExpiresAt: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
       attempts: 0,
     });
-
-    await redisClient.expire(otpKey, 300);
+    const activeRecord = await getSignupRecordByPhone(phone);
+    await saveOtpHistory(
+      otpRequestKey(signupData.userId, activeRecord.record.otpRequestId),
+      {
+        userId: signupData.userId,
+        phone,
+        hashOtp,
+        otpRequestId: activeRecord.record.otpRequestId,
+        requestedAt: new Date().toISOString(),
+        expiresAt: activeRecord.record.otpExpiresAt,
+        status: "requested",
+      }
+    );
     await redisClient.set(cooldownKey, "active", { EX: 30 });
 
-    return {
-      message: "OTP sent successfully via SMS",
-      otp,
-    };
+    return { message: "OTP sent successfully via SMS", otp };
   },
 
   async verifyOtp({ phone, otp, req }) {
-    const otpKey = `otp:${phone}`;
-    const otpData = await redisClient.hGetAll(otpKey);
+    const signupData = await getSignupRecordByPhone(phone);
+    const otpData = signupData?.record;
 
-    if (!otpData || !otpData.hash) {
-      const error = new Error("OTP expired or not found");
+    if (!otpData || !otpData.hasOtp || !otpData.hashOtp) {
+      const error = new Error("OTP expired or not found. Please request a new OTP.");
       error.status = 400;
       throw error;
     }
 
-    const attempts = parseInt(otpData.attempts, 10) || 0;
-    if (attempts >= 5) {
-      await redisClient.del(otpKey);
-      const error = new Error("Too many failed attempts. Please request a new OTP.");
+    const attempts = Number(otpData.attempts) || 0;
+    if (attempts >= 5 || Date.now() > new Date(otpData.otpExpiresAt).getTime()) {
+      await saveSignupRecord(signupData.userId, {
+        ...otpData,
+        hasOtp: false,
+        hashOtp: null,
+        otpExpiresAt: null,
+        attempts: 0,
+      });
+      const error = new Error("OTP expired or too many attempts. Please request a new OTP.");
       error.status = 400;
       throw error;
     }
 
-    const incomingHashedOtp = crypto.createHash("sha256").update(otp).digest("hex");
-
-    if (otpData.hash !== incomingHashedOtp) {
-      await redisClient.hIncrBy(otpKey, "attempts", 1);
-      const remainingAttempts = 5 - (attempts + 1);
-      const error = new Error(`Invalid OTP. ${remainingAttempts} attempts remaining.`);
+    const incomingHashOtp = crypto.createHash("sha256").update(otp).digest("hex");
+    if (otpData.hashOtp !== incomingHashOtp) {
+      await saveSignupRecord(signupData.userId, {
+        ...otpData,
+        attempts: attempts + 1,
+      });
+      const error = new Error(`Invalid OTP. ${5 - (attempts + 1)} attempts remaining.`);
       error.status = 401;
       throw error;
     }
-
-    await redisClient.del(otpKey);
 
     const user = await User.findOneAndUpdate(
       { phone },
@@ -205,12 +489,33 @@ const userService = {
       throw error;
     }
 
+    await saveSignupRecord(signupData.userId, {
+      ...otpData,
+      hasOtp: false,
+      hashOtp: otpData.hashOtp,
+      otpExpiresAt: null,
+      attempts: 0,
+      isVerified: true,
+      otpVerifiedAt: new Date().toISOString(),
+    });
+    await saveOtpHistory(
+      otpLoginKey(signupData.userId, crypto.randomUUID()),
+      {
+        userId: signupData.userId,
+        phone,
+        hashOtp: otpData.hashOtp,
+        otpRequestId: otpData.otpRequestId,
+        loggedInAt: new Date().toISOString(),
+        status: "login_success",
+      }
+    );
+    await invalidateUserCache(user._id);
+
     const accessToken = jwt.sign(
       { userId: user._id, email: user.email },
       process.env.ACCESS_TOKEN_SECRET,
       { expiresIn: process.env.ACCESS_TOKEN_EXPIRY || "15m" }
     );
-
     const refreshToken = jwt.sign(
       { userId: user._id },
       process.env.REFRESH_TOKEN_SECRET,
@@ -239,6 +544,7 @@ const userService = {
       isVerified: true,
     };
   },
+
 
   async login({ email, password, req }) {
     const user = await User.findOne({ email });
@@ -359,6 +665,11 @@ const userService = {
       throw err;
     }
 
+    // const cachedUser = await getCachedUser(decoded.userId);
+    // if (cachedUser) {
+    //   return cachedUser;
+    // }
+
     const user = await User.findById(decoded.userId).select("-password");
     if (!user) {
       const err = new Error("User profile not found");
@@ -366,35 +677,13 @@ const userService = {
       throw err;
     }
 
-    return user;
+    return toPublicUser(user);
   },
 
   async updateUserProfile(userId, value) {
     console.log("Updating user profile for userId:", userId, "with value:", value);
 
     const updatePayload = { ...value };
-
-    if (Object.prototype.hasOwnProperty.call(updatePayload, "image")) {
-      if (typeof updatePayload.image === "string" && updatePayload.image.trim() !== "") {
-        try {
-          const result = await cloudinary.uploader.upload(updatePayload.image, {
-            folder: "user_avatars",
-            resource_type: "image",
-          });
-          updatePayload.avtarKey = result.secure_url;
-        } catch (cloudinaryError) {
-          console.error("========== CLOUDINARY ERROR ==========");
-          console.error(cloudinaryError);
-          console.error("======================================");
-
-          const error = new Error("Failed to upload image");
-          error.status = 500;
-          error.error = cloudinaryError?.message || "Cloudinary upload failed";
-          throw error;
-        }
-      }
-      delete updatePayload.image;
-    }
 
     if (updatePayload.email) {
       updatePayload.email = updatePayload.email.toLowerCase();
@@ -412,36 +701,16 @@ const userService = {
       throw error;
     }
 
+    await invalidateUserCache(updatedUser._id);
+
     return {
       message: "Profile updated completely successfully",
-      user: updatedUser,
+      user: toPublicUser(updatedUser),
     };
   },
 
   async patchUserProfile(userId, value) {
     const updatePayload = { ...value };
-
-    if (Object.prototype.hasOwnProperty.call(updatePayload, "image")) {
-      if (typeof updatePayload.image === "string" && updatePayload.image.trim() !== "") {
-        try {
-          const result = await cloudinary.uploader.upload(updatePayload.image, {
-            folder: "user_avatars",
-            resource_type: "image",
-          });
-          updatePayload.avtarKey = result.secure_url;
-        } catch (cloudinaryError) {
-          console.error("========== CLOUDINARY ERROR ==========");
-          console.error(cloudinaryError);
-          console.error("======================================");
-
-          const error = new Error("Failed to upload image");
-          error.status = 500;
-          error.error = cloudinaryError?.message || "Cloudinary upload failed";
-          throw error;
-        }
-      }
-      delete updatePayload.image;
-    }
 
     if (updatePayload.email) {
       updatePayload.email = updatePayload.email.toLowerCase();
@@ -459,9 +728,11 @@ const userService = {
       throw error;
     }
 
+    await invalidateUserCache(updatedUser._id);
+
     return {
       message: "Profile updated partially successfully",
-      user: updatedUser,
+      user: toPublicUser(updatedUser),
     };
   },
 
@@ -472,11 +743,17 @@ const userService = {
       error.status = 404;
       throw error;
     }
+
+    await invalidateUserCache(userId);
+    await deleteCloudinaryAvatar(deletedUser.avtarPublicId);
   },
 
   async getUserById(id) {
-    return User.findById(id).select("-password");
-  },
+  const user = await User.findById(id).select("-password");
+
+  return user ? toPublicUser(user) : null;
+},
+
 
   async logout(req) {
     let userId = null;

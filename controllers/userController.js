@@ -67,6 +67,16 @@ const userController = {
     }
   },
 
+  async createSignupAvatarUpload(req, res) {
+    try {
+      const result = await userService.createSignupAvatarUpload();
+      return res.status(200).json(result);
+    } catch (error) {
+      console.error("Signup avatar upload error:", error);
+      return res.status(error.status || 500).json({ message: error.message || "Server error" });
+    }
+  },
+
   async requestOTP(req, res, validatedData) {
     try {
       const response = await userService.requestOtp(validatedData.phone);
@@ -227,6 +237,40 @@ const userController = {
       return res.status(error.status || 500).json({
         message: error.message || "Server error",
       });
+    }
+  },
+
+  async createAvatarUpload(req, res) {
+    try {
+      const userId = resolveUserId(req);
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized. Please log in first." });
+      }
+
+      return res.status(200).json(await userService.createAvatarUpload(userId));
+    } catch (error) {
+      console.error("Avatar upload contract error:", error);
+      return res.status(error.status || 500).json({ message: error.message || "Server error" });
+    }
+  },
+
+  async confirmAvatarUpload(req, res) {
+    try {
+      const userId = resolveUserId(req);
+      if (!userId) {
+        return res.status(401).json({ message: "Unauthorized. Please log in first." });
+      }
+
+      if (!req.body.uploadId) {
+        return res.status(400).json({ message: "uploadId is required" });
+      }
+
+      return res.status(200).json(
+        await userService.confirmAvatarUpload(userId, req.body.uploadId)
+      );
+    } catch (error) {
+      console.error("Avatar confirmation error:", error);
+      return res.status(error.status || 500).json({ message: error.message || "Server error" });
     }
   },
 

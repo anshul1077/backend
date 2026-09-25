@@ -4,33 +4,40 @@ import { type } from "os";
 const userSchema = new mongoose.Schema({
     name: {
         type: String,
+        required: true,
         
     },
     email: {
         type: String,
-        unique: true
+        unique: true,
+        required: true,
+        lowercase: true,
     },
     password: {
         type: String,
+        required: true,
         
     },
     address: {
         type: String,
+        required: true,
        
     },
     phone: {
         type: String,
-       
+        required: true,
+        unique: true,
     },
     avtarKey: {
         type: String,
-       
     },
     countryCode: {
         type: String,
+        required: true
     },
     dateOfBirth: {
         type: Date,
+        required: true
     },
     status: {
         type: String,

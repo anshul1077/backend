@@ -13,7 +13,7 @@ const signupSchema = Joi.object({
   countryCode: Joi.string().trim().pattern(/^\+[0-9]+$/).min(2).max(5).required(),
   address: Joi.string().trim().required(),
   dateOfBirth: Joi.date().iso().max("now").required(),
-  image: Joi.string().optional(),
+  avatarUploadId: Joi.string().uuid().optional(),
 });
 
 const loginSchema = Joi.object({
@@ -27,7 +27,6 @@ const fullUpdateSchema = Joi.object({
   phone: Joi.string().trim().pattern(/^[0-9]+$/).min(7).max(15).required(),
   address: Joi.string().trim().required(),
   countryCode: Joi.string().trim().pattern(/^\+[0-9]+$/).min(2).max(5).optional(),
-  image: Joi.string().allow("").optional(),
   dateOfBirth: Joi.date().iso().max("now").required(),
 });
 
@@ -37,7 +36,6 @@ const partialUpdateSchema = Joi.object({
   phone: Joi.string().trim().pattern(/^[0-9]+$/).min(7).max(15).optional(),
   address: Joi.string().trim().optional(),
   countryCode: Joi.string().trim().pattern(/^\+[0-9]+$/).min(2).max(5).optional(),
-  image: Joi.string().allow("").optional(),
   dateOfBirth: Joi.date().iso().max("now").optional(),
   password: Joi.any().forbidden().messages({
     "any.unknown": "Password updates cannot be processed via this profile route.",
@@ -68,6 +66,10 @@ router.post("/users", async (req, res) => {
   }
 
   return userController.signup(req, res, value);
+});
+
+router.post("/users/avatar/upload", async (req, res) => {
+  return userController.createSignupAvatarUpload(req, res);
 });
 
 router.post("/auth/otp/request", async (req, res) => {
@@ -112,6 +114,8 @@ router.post("/auth/login", async (req, res) => {
 router.post("/auth/refresh", userController.refreshToken);
 
 router.get("/users/me", userController.getCurrentUser);
+router.post("/users/me/avatar/upload", userController.createAvatarUpload);
+router.post("/users/me/avatar/confirm", userController.confirmAvatarUpload);
 
 router.put("/users/me", async (req, res) => {
   console.log("Received request to update user profile with data:", req.body);

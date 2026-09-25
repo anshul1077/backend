@@ -1,7 +1,12 @@
 import { createClient } from "redis";
 
+const configuredRedisUrl = process.env.REDIS_URL || "redis://127.0.0.1:6379";
+const redisUrl = configuredRedisUrl.includes("://")
+  ? configuredRedisUrl
+  : `redis://${configuredRedisUrl}`;
+
 const redisClient = createClient({
-  url: process.env.REDIS_URL || "redis://127.0.0.1:6379",
+  url: redisUrl,
 });
 
 redisClient.on("connect", () => {
