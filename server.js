@@ -8,6 +8,7 @@ import cookieParser from "cookie-parser";
 import redisClient from "./config/redis.js";
 import userRouter from "./routes/userRouter.js";
 import MongoStore from "connect-mongo";
+import User from "./models/user.js";
 
 
 const app = express();
@@ -58,6 +59,17 @@ const startServer = async () => {
     await mongoose.connect(process.env.MONGO_URI);
 
     console.log("Connected to MongoDB successfully!");
+    const existingIndexes = await User.collection.indexes();
+    for (const field of ["email", "phone"]) {
+      const legacyIndex = existingIndexes.find((index) =>
+        index.unique && !index.partialFilterExpression &&
+        Object.keys(index.key).length === 1 && index.key[field] === 1
+      );
+      if (legacyIndex) {
+        await User.collection.dropIndex(legacyIndex.name);
+      }
+    }
+    await User.createIndexes();
 
     // Start Express
     app.listen(process.env.PORT, () => {
