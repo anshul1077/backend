@@ -9,9 +9,7 @@ const userSchema = new mongoose.Schema({
     },
     email: {
         type: String,
-        unique: true,
         required: true,
-        lowercase: true,
     },
     password: {
         type: String,
@@ -26,11 +24,42 @@ const userSchema = new mongoose.Schema({
     phone: {
         type: String,
         required: true,
-        unique: true,
     },
-    avtarKey: {
-        type: String,
+    // avtarKey: {
+    //     type: String,
+    // },
+
+    // Cloudinary public_id
+    avatarPublicId: {
+      type: String,
+      default: null,
     },
+
+    avatarFormat: {
+      type: String,
+      enum: [
+        "jpg",
+        "jpeg",
+        "png",
+        "webp",
+        null,
+      ],
+      default: null,
+    },
+
+    /*
+     * Actual file size reported by Cloudinary.
+     */
+    avatarBytes: {
+      type: Number,
+      default: null,
+    },
+
+    avatarUploadedAt: {
+      type: Date,
+      default: null,
+    },
+
     countryCode: {
         type: String,
         required: true
